@@ -30,7 +30,6 @@ use crate::{
         },
     },
     db_invalidation::invalidation_reasons,
-    utils::chunked_vec::ChunkedVec,
 };
 
 const META_KEY_OPERATIONS: u32 = 0;
@@ -249,12 +248,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
         get(&self.inner.database).context("Unable to read uncompleted operations from database")
     }
 
-    fn save_snapshot<I>(
-        &self,
-        operations: Vec<Arc<AnyOperation>>,
-        task_cache_updates: Vec<ChunkedVec<(Arc<CachedTaskType>, TaskId)>>,
-        snapshots: Vec<I>,
-    ) -> Result<()>
+    fn save_snapshot<I>(&self, operations: Vec<Arc<AnyOperation>>, snapshots: Vec<I>) -> Result<()>
     where
         I: Iterator<Item = SnapshotItem> + Send + Sync,
     {
@@ -265,10 +259,53 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
             &mut WriteBatch::Concurrent(ref batch, _) => {
                 {
                     let _span = tracing::trace_span!("update task data").entered();
-                    process_task_data(snapshots, Some(batch))?;
+                    let max_new_task_id = parallel::map_collect_owned::<_, _, Result<Vec<_>>>(
+                        snapshots,
+                        |shard: I| {
+                            let mut max_new_task_id = 0;
+                            for SnapshotItem {
+                                task_id,
+                                meta,
+                                data,
+                                task_type_hash,
+                            } in shard
+                            {
+                                let key = IntKey::new(*task_id);
+                                let key = key.as_ref();
+                                if let Some(meta) = meta {
+                                    batch.put(
+                                        KeySpace::TaskMeta,
+                                        WriteBuffer::Borrowed(key),
+                                        WriteBuffer::SmallVec(meta),
+                                    )?;
+                                }
+                                if let Some(data) = data {
+                                    batch.put(
+                                        KeySpace::TaskData,
+                                        WriteBuffer::Borrowed(key),
+                                        WriteBuffer::SmallVec(data),
+                                    )?;
+                                }
+                                // Write task cache entry inline if this is a new task
+                                if let Some(task_type_hash) = task_type_hash {
+                                    batch.put(
+                                        KeySpace::TaskCache,
+                                        WriteBuffer::Borrowed(&task_type_hash.to_be_bytes()),
+                                        WriteBuffer::Borrowed(key),
+                                    )?;
+                                    max_new_task_id = max_new_task_id.max(*task_id);
+                                }
+                            }
+                            Ok(max_new_task_id)
+                        },
+                    )?
+                    .into_iter()
+                    .max()
+                    .unwrap_or_default();
+
                     let span = tracing::trace_span!("flush task data").entered();
                     parallel::try_for_each(
-                        &[KeySpace::TaskMeta, KeySpace::TaskData],
+                        &[KeySpace::TaskMeta, KeySpace::TaskData, KeySpace::TaskCache],
                         |&key_space| {
                             let _span = span.clone().entered();
                             // Safety: `process_task_data` has returned, so no concurrent `put` or
@@ -278,111 +315,78 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                             unsafe { batch.flush(key_space) }
                         },
                     )?;
+
+                    let mut next_task_id =
+                        get_next_free_task_id::<
+                            T::SerialWriteBatch<'_>,
+                            T::ConcurrentWriteBatch<'_>,
+                        >(&mut WriteBatchRef::concurrent(batch))?;
+                    next_task_id = next_task_id.max(max_new_task_id + 1);
+
+                    save_infra::<T::SerialWriteBatch<'_>, T::ConcurrentWriteBatch<'_>>(
+                        &mut WriteBatchRef::concurrent(batch),
+                        next_task_id,
+                        operations,
+                    )?;
                 }
-
-                let mut next_task_id = get_next_free_task_id::<
-                    T::SerialWriteBatch<'_>,
-                    T::ConcurrentWriteBatch<'_>,
-                >(&mut WriteBatchRef::concurrent(batch))?;
-
-                {
-                    let _span = tracing::trace_span!(
-                        "update task cache",
-                        items = task_cache_updates.iter().map(|m| m.len()).sum::<usize>()
-                    )
-                    .entered();
-                    let max_task_id = parallel::map_collect_owned::<_, _, Result<Vec<_>>>(
-                        task_cache_updates,
-                        |updates| {
-                            let _span = _span.clone().entered();
-                            let mut max_task_id = 0;
-                            for (task_type, task_id) in updates {
-                                let hash = compute_task_type_hash(&task_type);
-                                let task_id: u32 = *task_id;
-
-                                batch
-                                    .put(
-                                        KeySpace::TaskCache,
-                                        WriteBuffer::Borrowed(&hash.to_le_bytes()),
-                                        WriteBuffer::Borrowed(&task_id.to_le_bytes()),
-                                    )
-                                    .with_context(|| {
-                                        format!(
-                                            "Unable to write task cache {task_type:?} => {task_id}"
-                                        )
-                                    })?;
-                                max_task_id = max_task_id.max(task_id);
-                            }
-
-                            Ok(max_task_id)
-                        },
-                    )?
-                    .into_iter()
-                    .max()
-                    .unwrap_or(0);
-                    next_task_id = next_task_id.max(max_task_id + 1);
-                }
-
-                save_infra::<T::SerialWriteBatch<'_>, T::ConcurrentWriteBatch<'_>>(
-                    &mut WriteBatchRef::concurrent(batch),
-                    next_task_id,
-                    operations,
-                )?;
             }
             WriteBatch::Serial(batch) => {
-                {
+                let next_task_id = {
                     let _span = tracing::trace_span!("update tasks").entered();
-                    let task_items =
-                        process_task_data(snapshots, None::<&T::ConcurrentWriteBatch<'_>>)?;
-                    for (task_id, meta, data) in task_items.into_iter().flatten() {
+                    let mut next_task_id =
+                        get_next_free_task_id::<
+                            T::SerialWriteBatch<'_>,
+                            T::ConcurrentWriteBatch<'_>,
+                        >(&mut WriteBatchRef::serial(batch))?;
+                    for SnapshotItem {
+                        task_id,
+                        meta,
+                        data,
+                        task_type_hash,
+                    } in snapshots.into_iter().flatten()
+                    {
                         let key = IntKey::new(*task_id);
                         let key = key.as_ref();
                         if let Some(meta) = meta {
                             batch
-                                .put(KeySpace::TaskMeta, WriteBuffer::Borrowed(key), meta)
+                                .put(
+                                    KeySpace::TaskMeta,
+                                    WriteBuffer::Borrowed(key),
+                                    WriteBuffer::SmallVec(meta),
+                                )
                                 .with_context(|| {
                                     format!("Unable to write meta items for {task_id}")
                                 })?;
                         }
                         if let Some(data) = data {
                             batch
-                                .put(KeySpace::TaskData, WriteBuffer::Borrowed(key), data)
+                                .put(
+                                    KeySpace::TaskData,
+                                    WriteBuffer::Borrowed(key),
+                                    WriteBuffer::SmallVec(data),
+                                )
                                 .with_context(|| {
                                     format!("Unable to write data items for {task_id}")
                                 })?;
                         }
+                        if let Some(task_type_hash) = task_type_hash {
+                            batch
+                                .put(
+                                    KeySpace::TaskCache,
+                                    WriteBuffer::Borrowed(&task_type_hash.to_be_bytes()),
+                                    WriteBuffer::Borrowed(key),
+                                )
+                                .with_context(|| {
+                                    format!("Unable to write data items for {task_id}")
+                                })?;
+                            next_task_id = next_task_id.max(*task_id);
+                        }
                     }
                     batch.flush(KeySpace::TaskMeta)?;
                     batch.flush(KeySpace::TaskData)?;
-                }
-
-                let mut next_task_id = get_next_free_task_id::<
-                    T::SerialWriteBatch<'_>,
-                    T::ConcurrentWriteBatch<'_>,
-                >(&mut WriteBatchRef::serial(batch))?;
-
-                {
-                    let _span = tracing::trace_span!(
-                        "update task cache",
-                        items = task_cache_updates.iter().map(|m| m.len()).sum::<usize>()
-                    )
-                    .entered();
-                    for (task_type, task_id) in task_cache_updates.into_iter().flatten() {
-                        let hash = compute_task_type_hash(&task_type);
-                        let task_id = *task_id;
-
-                        batch
-                            .put(
-                                KeySpace::TaskCache,
-                                WriteBuffer::Borrowed(&hash.to_le_bytes()),
-                                WriteBuffer::Borrowed(&task_id.to_le_bytes()),
-                            )
-                            .with_context(|| {
-                                format!("Unable to write task cache {task_type:?} => {task_id}")
-                            })?;
-                        next_task_id = next_task_id.max(task_id + 1);
-                    }
-                }
+                    batch.flush(KeySpace::TaskCache)?;
+                    next_task_id
+                };
 
                 save_infra::<T::SerialWriteBatch<'_>, T::ConcurrentWriteBatch<'_>>(
                     &mut WriteBatchRef::serial(batch),
@@ -565,11 +569,13 @@ where
     Ok(())
 }
 
-/// Computes a deterministic 64-bit hash of a CachedTaskType for use as a TaskCache key.
+/// Computes a deterministic 64-bit hash of a CachedTaskType for use as a TaskCache
+/// key.
 ///
-/// This encodes the task type directly to a hasher, avoiding intermediate buffer allocation.
-/// The encoding is deterministic (function IDs from registry, bincode argument encoding).
-fn compute_task_type_hash(task_type: &CachedTaskType) -> u64 {
+/// This encodes the task type directly to a hasher, avoiding intermediate buffer
+/// allocation. The encoding is deterministic (function IDs from
+/// registry, bincode argument encoding).
+pub fn compute_task_type_hash(task_type: &CachedTaskType) -> u64 {
     let mut hasher = Xxh3Hash64Hasher::new();
     task_type.hash_encode(&mut hasher);
     let hash = hasher.finish();
@@ -583,60 +589,6 @@ fn compute_task_type_hash(task_type: &CachedTaskType) -> u64 {
         );
     }
     hash
-}
-
-type SerializedTasks = Vec<
-    Vec<(
-        TaskId,
-        Option<WriteBuffer<'static>>,
-        Option<WriteBuffer<'static>>,
-    )>,
->;
-
-fn process_task_data<'a, B: ConcurrentWriteBatch<'a> + Send + Sync, I>(
-    tasks: Vec<I>,
-    batch: Option<&B>,
-) -> Result<SerializedTasks>
-where
-    I: Iterator<Item = SnapshotItem> + Send + Sync,
-{
-    parallel::map_collect_owned::<_, _, Result<Vec<_>>>(tasks, |tasks| {
-        let mut result = Vec::new();
-        for SnapshotItem {
-            task_id,
-            meta,
-            data,
-        } in tasks
-        {
-            if let Some(batch) = batch {
-                let key = IntKey::new(*task_id);
-                let key = key.as_ref();
-                if let Some(meta) = meta {
-                    batch.put(
-                        KeySpace::TaskMeta,
-                        WriteBuffer::Borrowed(key),
-                        WriteBuffer::SmallVec(meta),
-                    )?;
-                }
-                if let Some(data) = data {
-                    batch.put(
-                        KeySpace::TaskData,
-                        WriteBuffer::Borrowed(key),
-                        WriteBuffer::SmallVec(data),
-                    )?;
-                }
-            } else {
-                // Store the new task data
-                result.push((
-                    task_id,
-                    meta.map(WriteBuffer::SmallVec),
-                    data.map(WriteBuffer::SmallVec),
-                ));
-            }
-        }
-
-        Ok(result)
-    })
 }
 #[cfg(test)]
 mod tests {
