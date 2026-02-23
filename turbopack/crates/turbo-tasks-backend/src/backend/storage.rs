@@ -72,6 +72,9 @@ impl SpecificTaskDataCategory {
 const SNAPSHOT_SHARDS: usize = 16;
 
 pub struct Storage {
+    /// Whether to track modifications for persistence. When false, `track_modification_internal`
+    /// is a no-op and the `modified`/`snapshots` fields are unused.
+    track_modifications: bool,
     snapshot_mode: AtomicBool,
     /// Tracks TaskIds that have been modified since the last snapshot.
     /// Uses a sharded Vec for efficient append-only writes.
@@ -88,23 +91,30 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn new(shard_amount: usize, small_preallocation: bool) -> Self {
+    pub fn new(shard_amount: usize, small_preallocation: bool, track_modifications: bool) -> Self {
         let map_capacity: usize = if small_preallocation {
             1024
         } else {
             1024 * 1024
         };
 
+        // When persistence is disabled (track_modifications=false), modified and snapshots are
+        // never populated, so use minimal 1-shard allocations to avoid wasting memory on thousands
+        // of empty sharded mutexes and dashmap shards.
+        let (modified_shards, snapshot_shards) = if track_modifications {
+            (shard_amount, SNAPSHOT_SHARDS)
+        } else {
+            (1, 1)
+        };
+
         Self {
+            track_modifications,
             snapshot_mode: AtomicBool::new(false),
-            // TODO: these two datastructures should only exist/be modified if we are going to
-            // persist This should probably be sharded by a smaller amount since it sees
-            // far fewer mutations
-            modified: Sharded::new(shard_amount),
+            modified: Sharded::new(modified_shards),
             snapshots: FxDashMap::with_capacity_and_hasher_and_shard_amount(
-                0, // Start empty, rarely used
+                0,
                 Default::default(),
-                SNAPSHOT_SHARDS,
+                snapshot_shards,
             ),
             map: FxDashMap::with_capacity_and_hasher_and_shard_amount(
                 map_capacity,
@@ -312,6 +322,9 @@ impl StorageWriteGuard<'_> {
         category: SpecificTaskDataCategory,
         #[cfg(feature = "trace_task_modification")] name: &str,
     ) {
+        if !self.storage.track_modifications {
+            return;
+        }
         let flags = &self.inner.flags;
         if flags.is_snapshot(category) {
             return;

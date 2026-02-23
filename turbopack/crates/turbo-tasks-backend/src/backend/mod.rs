@@ -233,6 +233,10 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
             options.active_tracking = false;
         }
         let small_preallocation = options.small_preallocation;
+        let track_modifications = matches!(
+            options.storage_mode,
+            Some(StorageMode::ReadWrite) | Some(StorageMode::ReadWriteOnShutdown)
+        );
         let next_task_id = backing_storage
             .next_free_task_id()
             .expect("Failed to get task id");
@@ -249,7 +253,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
             ),
             task_cache: FxDashMap::default(),
             local_is_partial: AtomicBool::new(next_task_id != TaskId::MIN),
-            storage: Storage::new(shard_amount, small_preallocation),
+            storage: Storage::new(shard_amount, small_preallocation, track_modifications),
             in_progress_operations: AtomicUsize::new(0),
             snapshot_request: Mutex::new(SnapshotRequest::new()),
             operations_suspended: Condvar::new(),

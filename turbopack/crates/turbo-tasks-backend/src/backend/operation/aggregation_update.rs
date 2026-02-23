@@ -1879,7 +1879,7 @@ impl AggregationUpdateQueue {
     /// See detailed comments in that function, follow the STEP numbers.
     fn inner_of_uppers_has_new_follower<T: TaskIdWithOptionalCount + Clone, const N: usize>(
         &mut self,
-        ctx: &mut impl ExecuteContext,
+        ctx: &mut impl ExecuteContext<'_>,
         new_follower_id: TaskId,
         mut upper_ids: SmallVec<[T; N]>,
     ) {
