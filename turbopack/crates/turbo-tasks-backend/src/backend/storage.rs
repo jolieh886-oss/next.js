@@ -104,7 +104,7 @@ impl Storage {
         let (modified_shards, snapshot_shards) = if track_modifications {
             (shard_amount, SNAPSHOT_SHARDS)
         } else {
-            (1, 1)
+            (1, 2)
         };
 
         Self {
