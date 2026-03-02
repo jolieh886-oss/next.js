@@ -39,6 +39,10 @@ pub struct ImportAnnotations {
     turbopack_loader: Option<WebpackLoaderItem>,
     turbopack_rename_as: Option<RcStr>,
     turbopack_module_type: Option<RcStr>,
+
+    turbopack_emit: Option<RcStr>,
+    turbopack_emit_data: Option<RcStr>,
+    turbopack_collect: Option<RcStr>,
 }
 
 /// Enables a specified transition for the annotated import
@@ -64,6 +68,9 @@ impl ImportAnnotations {
             serde_json::Map::new();
         let mut turbopack_rename_as: Option<RcStr> = None;
         let mut turbopack_module_type: Option<RcStr> = None;
+        let mut turbopack_emit: Option<RcStr> = None;
+        let mut turbopack_emit_data: Option<RcStr> = None;
+        let mut turbopack_collect: Option<RcStr> = None;
 
         for prop in &with.props {
             let Some(kv) = prop.as_prop().and_then(|p| p.as_key_value()) else {
@@ -75,6 +82,7 @@ impl ImportAnnotations {
                 PropName::Str(str) => str.value.to_string_lossy().into_owned(),
                 _ => continue,
             };
+
 
             // All turbopack* keys are extracted as string values (per TC39 import attributes spec)
             match key_str.as_str() {
@@ -105,6 +113,23 @@ impl ImportAnnotations {
                             Some(RcStr::from(s.value.to_string_lossy().into_owned()));
                     }
                 }
+                "turbopackEmit" => {
+                    if let Some(Lit::Str(s)) = kv.value.as_lit() {
+                        turbopack_emit = Some(RcStr::from(s.value.to_string_lossy().into_owned()));
+                    }
+                }
+                "turbopackEmitData" => {
+                    if let Some(Lit::Str(s)) = kv.value.as_lit() {
+                        turbopack_emit_data =
+                            Some(RcStr::from(s.value.to_string_lossy().into_owned()));
+                    }
+                }
+                "turbopackCollect" => {
+                    if let Some(Lit::Str(s)) = kv.value.as_lit() {
+                        turbopack_collect =
+                            Some(RcStr::from(s.value.to_string_lossy().into_owned()));
+                    }
+                }
                 _ => {
                     // For all other keys, only accept string values (per spec)
                     if let Some(Lit::Str(str)) = kv.value.as_lit() {
@@ -129,6 +154,9 @@ impl ImportAnnotations {
             turbopack_loader,
             turbopack_rename_as,
             turbopack_module_type,
+            turbopack_emit,
+            turbopack_emit_data,
+            turbopack_collect,
         }
     }
 
@@ -162,6 +190,9 @@ impl ImportAnnotations {
             turbopack_loader: None,
             turbopack_rename_as: None,
             turbopack_module_type: None,
+            turbopack_emit: None,
+            turbopack_emit_data: None,
+            turbopack_collect: None,
         })
     }
 
@@ -199,6 +230,21 @@ impl ImportAnnotations {
     /// Returns true if a turbopack loader is configured
     pub fn has_turbopack_loader(&self) -> bool {
         self.turbopack_loader.is_some()
+    }
+
+    /// Returns the turbopackEmit configuration, if present
+    pub fn turbopack_emit(&self) -> Option<&RcStr> {
+        self.turbopack_emit.as_ref()
+    }
+
+    /// Returns the turbopackEmitData configuration, if present
+    pub fn turbopack_emit_data(&self) -> Option<&RcStr> {
+        self.turbopack_emit_data.as_ref()
+    }
+
+    /// Returns the turbopackCollect configuration, if present
+    pub fn turbopack_collect(&self) -> Option<&RcStr> {
+        self.turbopack_collect.as_ref()
     }
 
     pub fn get(&self, key: &Wtf8Atom) -> Option<&Wtf8Atom> {
