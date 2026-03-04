@@ -19,5 +19,7 @@ pub mod failed_to_analyze {
         pub const NEW_WORKER: &str = "TP1203";
         pub const MODULE_HOT_ACCEPT: &str = "TP1204";
         pub const MODULE_HOT_DECLINE: &str = "TP1205";
+        pub const TURBOPACK_EMIT: &str = "TP1204";
+        pub const TURBOPACK_COLLECT: &str = "TP1205";
     }
 }
