@@ -37,6 +37,7 @@ pub use crate::chunk::{
 use crate::{
     asset::Asset,
     chunk::availability_info::AvailabilityInfo,
+    emit_collect::CollectingModule,
     ident::AssetIdent,
     module::Module,
     module_graph::{
@@ -281,6 +282,8 @@ pub enum ChunkingType {
         merge_tag: RcStr,
         is_async: bool,
     },
+    /// Like async, chunk once per entry.
+    PerEntry,
     /// Create a new chunk group in a separate context, merging references with the same tag into a
     /// single chunk group. It provides available modules to the current chunk group. It's assumed
     /// to be loaded before the current chunk group.
@@ -305,6 +308,7 @@ impl Display for ChunkingType {
                 )
             }
             ChunkingType::Async => write!(f, "Async"),
+            ChunkingType::PerEntry => write!(f, "PerEntry"),
             ChunkingType::Isolated {
                 _ty,
                 merge_tag: Some(merge_tag),
@@ -392,6 +396,7 @@ impl ChunkingType {
                 inherit_async: false,
             },
             ChunkingType::Async => ChunkingType::Async,
+            ChunkingType::PerEntry => ChunkingType::PerEntry,
             ChunkingType::Isolated { _ty, merge_tag } => ChunkingType::Isolated {
                 _ty: *_ty,
                 merge_tag: merge_tag.clone(),
@@ -432,6 +437,7 @@ pub struct ChunkGroupContent {
     pub batch_groups: Vec<ResolvedVc<ModuleBatchGroup>>,
     pub async_modules: FxIndexSet<ResolvedVc<Box<dyn ChunkableModule>>>,
     pub traced_modules: FxIndexSet<ResolvedVc<Box<dyn Module>>>,
+    pub collecting_modules: FxIndexSet<ResolvedVc<Box<dyn CollectingModule>>>,
     pub availability_info: AvailabilityInfo,
 }
 
