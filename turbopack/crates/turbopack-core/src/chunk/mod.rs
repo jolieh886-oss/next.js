@@ -385,7 +385,7 @@ impl ChunkingType {
             } | ChunkingType::Shared {
                 merge_tag: Some(_),
                 ..
-            } | ChunkingType::Emitted { .. }
+            }
         )
     }
 
