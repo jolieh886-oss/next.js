@@ -16,14 +16,28 @@ describe('adapter-partial-fallback', () => {
     const withoutGspPrerender = outputs.prerenders.find(
       (output) => output.pathname === '/without-gsp/[slug]'
     )
+    const genericPrefixPrerender = outputs.prerenders.find(
+      (output) => output.pathname === '/prefix/[one]/[two]'
+    )
+    const generatedPrefixPrerender = outputs.prerenders.find(
+      (output) => output.pathname === '/prefix/b/[two]'
+    )
 
     expect(withGspPrerender).toBeDefined()
     expect(withoutGspPrerender).toBeDefined()
+    expect(genericPrefixPrerender).toBeDefined()
+    expect(generatedPrefixPrerender).toBeDefined()
 
     expect(withGspPrerender.config.partialFallback).toBe(true)
     expect(withGspPrerender.config.allowQuery).toEqual(['nxtPslug'])
 
     expect(withoutGspPrerender.config.partialFallback).toBeUndefined()
     expect(withoutGspPrerender.config.allowQuery).toEqual([])
+
+    expect(genericPrefixPrerender.config.partialFallback).toBe(true)
+    expect(genericPrefixPrerender.config.allowQuery).toEqual(['nxtPone'])
+
+    expect(generatedPrefixPrerender.config.partialFallback).toBeUndefined()
+    expect(generatedPrefixPrerender.config.allowQuery).toEqual([])
   })
 })
