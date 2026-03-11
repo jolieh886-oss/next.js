@@ -65,7 +65,7 @@ use turbopack_core::{
     },
     module::Module,
     module_graph::{
-        GraphEntries, ModuleGraph, SingleModuleGraph, VisitedModules,
+        GraphEntries, ModuleGraph, SingleModuleGraph,
         binding_usage_info::{
             BindingUsageInfo, OptionBindingUsageInfo, compute_binding_usage_info,
         },
@@ -1429,21 +1429,6 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub async fn get_all_additional_entries(
-        self: Vc<Self>,
-        graphs: Vc<ModuleGraph>,
-    ) -> Result<Vc<GraphEntries>> {
-        let modules = self
-            .get_all_endpoints(false)
-            .await?
-            .iter()
-            .map(async |endpoint| Ok(endpoint.additional_entries(graphs).owned().await?))
-            .try_flat_join()
-            .await?;
-        Ok(Vc::cell(modules))
-    }
-
-    #[turbo_tasks::function]
     pub async fn module_graph(
         self: Vc<Self>,
         entry: ResolvedVc<Box<dyn Module>>,
@@ -1460,7 +1445,7 @@ impl Project {
             )
             .connect()
         } else {
-            *self.whole_app_module_graphs().await?.full
+            self.whole_app_module_graph()
         })
     }
 
@@ -1487,14 +1472,12 @@ impl Project {
             )
             .connect()
         } else {
-            *self.whole_app_module_graphs().await?.full
+            self.whole_app_module_graph()
         })
     }
 
     #[turbo_tasks::function]
-    pub async fn whole_app_module_graphs(
-        self: ResolvedVc<Self>,
-    ) -> Result<Vc<BaseAndFullModuleGraph>> {
+    pub async fn whole_app_module_graph(self: ResolvedVc<Self>) -> Result<Vc<ModuleGraph>> {
         async move {
             let module_graphs_op = whole_app_module_graph_operation(self);
             let module_graphs_vc = if self.next_mode().await?.is_production() {
@@ -2385,8 +2368,7 @@ impl Project {
             }
             .cell()),
             ModuleIdStrategyConfig::Deterministic => {
-                let module_graphs = self.whole_app_module_graphs().await?;
-                Ok(get_global_module_id_strategy(*module_graphs.full))
+                Ok(get_global_module_id_strategy(self.whole_app_module_graph()))
             }
         }
     }
@@ -2394,9 +2376,9 @@ impl Project {
     /// Compute the used exports and unused imports for each module.
     #[turbo_tasks::function]
     async fn binding_usage_info(self: Vc<Self>) -> Result<Vc<BindingUsageInfo>> {
-        let module_graphs = self.whole_app_module_graphs().await?;
+        let module_graphs = self.whole_app_module_graph().await?;
         Ok(module_graphs
-            .binding_usage_info
+            .input_binding_usage
             .context("No binding usage info")?
             .connect())
     }
@@ -2444,77 +2426,34 @@ impl Project {
 // This is a performance optimization. This function is a root aggregation function that
 // aggregates over the whole subgraph.
 #[turbo_tasks::function(operation, root)]
-async fn whole_app_module_graph_operation(
-    project: ResolvedVc<Project>,
-) -> Result<Vc<BaseAndFullModuleGraph>> {
+async fn whole_app_module_graph_operation(project: ResolvedVc<Project>) -> Result<Vc<ModuleGraph>> {
     let next_mode = project.next_mode();
     let next_mode_ref = next_mode.await?;
     let should_trace = next_mode_ref.is_production();
     let should_read_binding_usage = next_mode_ref.is_production();
-    let base_single_module_graph = SingleModuleGraph::new_with_entries(
+    let module_graph = SingleModuleGraph::new_with_entries(
         project.get_all_entries().to_resolved().await?,
         should_trace,
         should_read_binding_usage,
     );
-    let base_visited_modules = VisitedModules::from_graph(base_single_module_graph);
 
-    let base = ModuleGraph::from_graphs(vec![base_single_module_graph], None);
+    let base = ModuleGraph::from_graphs(vec![module_graph], None);
 
     let turbopack_remove_unused_imports = *project
         .next_config()
         .turbopack_remove_unused_imports(next_mode)
         .await?;
-
-    let base = if turbopack_remove_unused_imports {
-        // TODO suboptimal that we do compute_binding_usage_info twice (once for the base graph
-        // and later for the full graph)
-        let binding_usage_info = compute_binding_usage_info(base, true);
-        ModuleGraph::from_graphs(vec![base_single_module_graph], Some(binding_usage_info))
-    } else {
-        base
-    };
-
-    let additional_entries = project
-        .get_all_additional_entries(base.connect())
-        .to_resolved()
+    let turbopack_remove_unused_exports = *project
+        .next_config()
+        .turbopack_remove_unused_exports(next_mode)
         .await?;
 
-    let additional_module_graph = SingleModuleGraph::new_with_entries_visited(
-        additional_entries,
-        base_visited_modules,
-        should_trace,
-        should_read_binding_usage,
-    );
-
-    let graphs = vec![base_single_module_graph, additional_module_graph];
-
-    let (full, binding_usage_info) = if turbopack_remove_unused_imports {
-        let full_with_unused_references = ModuleGraph::from_graphs(graphs.clone(), None);
-        let binding_usage_info = compute_binding_usage_info(full_with_unused_references, true);
-        (
-            ModuleGraph::from_graphs(graphs, Some(binding_usage_info)),
-            Some(binding_usage_info),
-        )
-    } else {
-        (ModuleGraph::from_graphs(graphs, None), None)
-    };
-
-    Ok(BaseAndFullModuleGraph {
-        base: base.connect().to_resolved().await?,
-        full: full.connect().to_resolved().await?,
-        binding_usage_info,
-    }
-    .cell())
-}
-
-#[turbo_tasks::value(shared)]
-pub struct BaseAndFullModuleGraph {
-    /// The base module graph generated from the entry points.
-    pub base: ResolvedVc<ModuleGraph>,
-    /// `full_with_unused_references` but with unused references removed.
-    pub full: ResolvedVc<ModuleGraph>,
-    /// Information about binding usage in the module graph.
-    pub binding_usage_info: Option<OperationVc<BindingUsageInfo>>,
+    Ok(ModuleGraph::from_graphs(
+        vec![module_graph],
+        (turbopack_remove_unused_imports || turbopack_remove_unused_exports)
+            .then(|| compute_binding_usage_info(base, turbopack_remove_unused_imports)),
+    )
+    .connect())
 }
 
 #[turbo_tasks::function]
