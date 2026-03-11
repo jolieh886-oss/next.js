@@ -10,15 +10,5 @@ ensureServerEntryExports([
 registerServerReference(myAction, "70e10665baac148856374b2789aceb970f66fec33e", null);
 __turbopack_emit__("./item.js", {
     namespace: 'next/server-actions',
-    data: "70e10665baac148856374b2789aceb970f66fec33e|myAction",
-    with: {
-        'turbopack-transition': 'next-rsc'
-    }
-});
-__turbopack_emit__("./item.js", {
-    namespace: 'next/server-actions',
-    data: "70e10665baac148856374b2789aceb970f66fec33e|myAction",
-    with: {
-        'turbopack-transition': 'next-edge-rsc'
-    }
+    data: "70e10665baac148856374b2789aceb970f66fec33e|myAction"
 });

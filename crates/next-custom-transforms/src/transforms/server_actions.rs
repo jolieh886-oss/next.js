@@ -628,6 +628,7 @@ impl<C: Comments> ServerActions<C> {
                 &self.file_name,
                 &action_id,
                 &action_name,
+                self.config.is_react_server_layer,
             )
             .into_iter()
             .map(ModuleItem::Stmt),
@@ -782,6 +783,7 @@ impl<C: Comments> ServerActions<C> {
                 &self.file_name,
                 &action_id,
                 &action_name,
+                self.config.is_react_server_layer,
             )
             .into_iter()
             .map(ModuleItem::Stmt),
@@ -882,6 +884,7 @@ impl<C: Comments> ServerActions<C> {
             self.mode,
             &self.file_name,
             &export_name,
+            self.config.is_react_server_layer,
         );
 
         if let Some(Ident { sym, .. }) = &self.arrow_or_fn_expr_ident {
@@ -980,6 +983,7 @@ impl<C: Comments> ServerActions<C> {
             self.mode,
             &self.file_name,
             &export_name,
+            self.config.is_react_server_layer,
         );
 
         if let Some(Ident { ref sym, .. }) = fn_name {
@@ -2293,6 +2297,7 @@ impl<C: Comments> VisitMut for ServerActions<C> {
                     &self.file_name,
                     ref_id,
                     &export_name.atom(),
+                    self.config.is_react_server_layer,
                 );
                 if !self.config.is_react_server_layer {
                     if matches!(export_name, ModuleExportName::Ident(i) if i.sym == *"default") {
@@ -3104,6 +3109,7 @@ fn create_and_hoist_cache_function(
     mode: ServerActionsMode,
     file_name: &str,
     export: &str,
+    is_react_server_layer: bool,
 ) -> Ident {
     let cache_ident = private_ident!(Span::dummy_with_cmt(), cache_name.clone());
     let inner_fn_name: Atom = format!("{}_INNER", cache_name).into();
@@ -3180,9 +3186,16 @@ fn create_and_hoist_cache_function(
         )),
     })));
     hoisted_extra_items.extend(
-        emit_server_action(unresolved_ctxt, mode, file_name, &reference_id, export)
-            .into_iter()
-            .map(ModuleItem::Stmt),
+        emit_server_action(
+            unresolved_ctxt,
+            mode,
+            file_name,
+            &reference_id,
+            export,
+            is_react_server_layer,
+        )
+        .into_iter()
+        .map(ModuleItem::Stmt),
     );
 
     cache_ident
@@ -3235,6 +3248,7 @@ fn emit_server_action(
     file_name: &str,
     action_id: &str,
     export: &str,
+    is_react_server_layer: bool,
 ) -> Vec<Stmt> {
     if mode == ServerActionsMode::Turbopack {
         let emit = quote_ident!(unresolved_ctxt, "__turbopack_emit__");
@@ -3244,20 +3258,30 @@ fn emit_server_action(
         )
         .into();
         let data: Expr = format!("{action_id}|{export}").into();
-        vec![
-            quote!(
-                "$emit($req, {namespace:'next/server-actions', data: $data, with: { 'turbopack-transition': 'next-rsc' }});" as Stmt,
-                emit = emit.clone(),
-                req: Expr = req.clone(),
-                data: Expr = data.clone()
-            ),
-            quote!(
-                "$emit($req, {namespace:'next/server-actions', data: $data, with: { 'turbopack-transition': 'next-edge-rsc' }});" as Stmt,
+        if is_react_server_layer {
+            // Don't transition, we are already in the RSC layer
+            vec![quote!(
+                "$emit($req, {namespace:'next/server-actions', data: $data});" as Stmt,
                 emit = emit,
                 req: Expr = req,
-                data: Expr = data,
-            ),
-        ]
+                data: Expr = data
+            )]
+        } else {
+            vec![
+                quote!(
+                    "$emit($req, {namespace:'next/server-actions', data: $data, with: { 'turbopack-transition': 'next-rsc' }});" as Stmt,
+                    emit = emit.clone(),
+                    req: Expr = req.clone(),
+                    data: Expr = data.clone()
+                ),
+                quote!(
+                    "$emit($req, {namespace:'next/server-actions', data: $data, with: { 'turbopack-transition': 'next-edge-rsc' }});" as Stmt,
+                    emit = emit,
+                    req: Expr = req,
+                    data: Expr = data,
+                ),
+            ]
+        }
     } else {
         vec![]
     }

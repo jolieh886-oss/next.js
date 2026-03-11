@@ -10,17 +10,7 @@ export var $$RSC_SERVER_CACHE_0 = $$reactCache__(function my_fn() {
 registerServerReference($$RSC_SERVER_CACHE_0, "803128060c414d59f8552e4788b846c0d2b7f74743", null);
 __turbopack_emit__("./item.js", {
     namespace: 'next/server-actions',
-    data: "803128060c414d59f8552e4788b846c0d2b7f74743|$$RSC_SERVER_CACHE_0",
-    with: {
-        'turbopack-transition': 'next-rsc'
-    }
-});
-__turbopack_emit__("./item.js", {
-    namespace: 'next/server-actions',
-    data: "803128060c414d59f8552e4788b846c0d2b7f74743|$$RSC_SERVER_CACHE_0",
-    with: {
-        'turbopack-transition': 'next-edge-rsc'
-    }
+    data: "803128060c414d59f8552e4788b846c0d2b7f74743|$$RSC_SERVER_CACHE_0"
 });
 Object["defineProperty"]($$RSC_SERVER_CACHE_0, "name", {
     value: "my_fn"
