@@ -178,12 +178,8 @@ impl<S: ParallelScheduler, const FAMILIES: usize> TurboPersistence<S, FAMILIES> 
         path: PathBuf,
         read_only: bool,
         parallel_scheduler: S,
-        mut config: DbConfig<FAMILIES>,
+        config: DbConfig<FAMILIES>,
     ) -> Self {
-        // Allow the env var to override even const-constructed configs.
-        if !crate::mmap_env_var() {
-            config.mmap = false;
-        }
         Self {
             parallel_scheduler,
             path,
